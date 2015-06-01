@@ -1,0 +1,11 @@
+# use these options for configure if no options a provided on the cmdline
+CONFIGURE_FLAGS="
+ CC=clang-3.5 \
+ CXX=clang++-3.5
+ CXXFLAGS='-fPIC -O2 -fno-strict-aliasing -g3 -ggdb -std=c++0x -Wall -Wno-tautological-compare -fcolor-diagnostics'
+ --with-alugrid=../alugrid
+ --enable-fieldvector-size-is-method
+ --enable-superlu
+ --disable-shared
+ --disable-parallel
+"

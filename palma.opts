@@ -1,0 +1,15 @@
+# use these options for configure if no options a provided on the cmdline
+CONFIGURE_FLAGS="
+ CC=gcc \
+ CXX=g++
+ CXXFLAGS='-fPIC -O2 -fno-strict-aliasing -g3 -ggdb -std=c++0x -Wall'
+ --with-alugrid=../alugrid
+ --with-boost=$HOME/boost
+ --with-boost-libdir=$HOME/boost/stage/lib
+ --with-superlu=$HOME/SuperLU_3.1
+ --with-blas=$HOME/local/lib/libopenblas.so
+ --enable-fieldvector-size-is-method
+ --disable-shared
+ --disable-parallel
+ --disable-documentation
+"

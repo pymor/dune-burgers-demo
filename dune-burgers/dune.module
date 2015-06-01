@@ -1,0 +1,10 @@
+################################
+# Dune module information file #
+################################
+
+#Name of the module
+Module: dune-burgers
+Version: 0.1
+Maintainer: stephan.rave@uni-muenster.de
+#depending on 
+Depends: dune-common dune-geometry dune-grid dune-spgrid
