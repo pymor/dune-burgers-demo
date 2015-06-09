@@ -12,6 +12,7 @@ from pymor.core.interfaces import ImmutableInterface
 from pymor.discretizations.basic import InstationaryDiscretization
 from pymor.operators.basic import OperatorBase
 from pymor.parameters.spaces import CubicParameterSpace
+from pymor.tools import mpi
 from pymor.vectorarrays.interfaces import VectorSpace
 from pymor.vectorarrays.list import VectorInterface, ListVectorArray
 from pymor.vectorarrays.numpy import NumpyVectorSpace
@@ -112,9 +113,28 @@ class DuneSpaceOperator(OperatorBase):
     def restricted(self, components):
         if isinstance(components, np.ndarray):
             components = components.tolist()
-        op, source_dofs, range_dofs = self._d().makeRestrictedSpaceOperator(components)
-        source_dofs = np.array(source_dofs)
-        return (RestrictedDuneSpaceOperator(op, range_dofs), source_dofs)
+
+        dims = mpi.comm.allgather(self.source.dim)
+        offsets = np.cumsum(np.concatenate(([0], dims)))[:-1]
+        offset = offsets[mpi.rank]
+
+        diameter, local_centers, local_source_dofs = self._d().getSubgridData(components, offset)
+        local_centers = np.array(local_centers, dtype=np.float64)
+        local_source_dofs = np.array(local_source_dofs, dtype=np.int64)
+
+        centers = np.empty((mpi.size,) + local_centers.shape, dtype=np.float64)
+        source_dofs = np.empty((mpi.size,) + local_source_dofs.shape, dtype=np.int64) if mpi.rank0 else None
+        mpi.comm.Gather(local_centers, centers, root=0)
+        mpi.comm.Gather(local_source_dofs, source_dofs, root=0)
+
+        if mpi.rank0:
+            centers = np.sum(centers, axis=0)
+            source_dofs = np.sum(source_dofs, axis=0)
+            op, source_dofs, range_dofs = self._d().makeRestrictedSpaceOperator(diameter, centers.tolist(),
+                                                                                source_dofs.tolist())
+            source_dofs = np.array(source_dofs)
+            range_dofs = np.array(range_dofs)
+            return (RestrictedDuneSpaceOperator(op, range_dofs), source_dofs)
 
 
 class RestrictedDuneSpaceOperator(OperatorBase):
@@ -168,7 +188,7 @@ class DuneBurgersVisualizer(ImmutableInterface):
 
         sources = []
         for i, u in enumerate(U):
-            fn = filename or '/tmp/burgers-{}'.format(i)
+            fn = filename or 'dune-burgers-visualization-{}'.format(i)
             sources.append(fn)
 
             if len(u) == 1:
@@ -178,13 +198,15 @@ class DuneBurgersVisualizer(ImmutableInterface):
                     self._impl.visualize(uu._impl, '{}-{:05}'.format(fn, i))
 
         if filename is None:
-            subprocess.call(['paraview', '/tmp/burgers-0-..vtu'])
-            import glob
-            for fn in glob.glob('/tmp/burgers-*.vtu'):
-                os.remove(fn)
+            from pymor.tools import mpi
+            if mpi.rank0:
+                subprocess.call(['paraview', 's{:0>4}-dune-burgers-visualization-0-..pvtu'.format(mpi.size)])
+                import glob
+                for fn in glob.glob('s*-dune-burgers-visualization-*'):
+                    os.remove(fn)
 
 
-def discretize_dune_burgers(filename, exponent_range=(1., 2.)):
+def discretize_dune_burgers(filename, exponent_range=(1., 2.), cache_region=None):
 
     impl = dune_module.Discretization(filename)
 
@@ -202,6 +224,7 @@ def discretize_dune_burgers(filename, exponent_range=(1., 2.)):
 
     d = InstationaryDiscretization(T, initial_data, operator, time_stepper=time_stepper,
                                    parameter_space=parameter_space,
-                                   visualizer=visualizer, name='DuneBrugers')
+                                   visualizer=visualizer, name='DuneBrugers',
+                                   cache_region=cache_region)
     # d.generate_sid()
     return d

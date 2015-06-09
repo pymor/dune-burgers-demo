@@ -12,10 +12,12 @@
 #include <dune/common/array.hh>
 #include <dune/common/exceptions.hh>
 #include <dune/common/fvector.hh>
+#include <dune/common/parallel/mpihelper.hh>
 #include <dune/common/parametertree.hh>
 #include <dune/common/parametertreeparser.hh>
 #include <dune/common/static_assert.hh>
 
+#include <dune/grid/common/mcmgmapper.hh>
 
 #pragma GCC diagnostic push
 #ifdef __clang__
@@ -51,6 +53,9 @@ namespace boost {
 
 #endif
 
+const int DIM = 3;
+bool rank0;
+
 
 #include "coefficients.hh"
 #include "vector.hh"
@@ -60,10 +65,9 @@ namespace boost {
 
 #ifdef AS_LIB
 #include <boost/python.hpp>
+#include <boost/python/stl_iterator.hpp>
 #endif
 
-
-const int DIM = 3;
 
 
 class Discretization
@@ -75,10 +79,10 @@ public:
   typedef GV::Grid::ctype Coord;
 
   typedef SpaceOperator<GV> OP;
-  typedef Dune::SingleCodimSingleGeomTypeMapper<GV, 0> Mapper;
+  typedef Dune::MultipleCodimMultipleGeomTypeMapper<GV, Dune::MCMGElementLayout> Mapper;
 
   // Restricted operator types
-  typedef Dune::ALUGrid<GV::dimension, GV::dimensionworld, Dune::cube, Dune::nonconforming> RG;
+  typedef Dune::ALUGrid<GV::dimension, GV::dimensionworld, Dune::cube, Dune::nonconforming, Dune::No_Comm> RG;
   typedef typename RG::LeafGridView RGV;
   typedef SpaceOperator<RGV, std::shared_ptr<RG> > ROP;
 
@@ -107,9 +111,12 @@ public:
     int voxelPerUnit = pt.get("grid.voxelPerUnit", -1);
     auto spt = pt.sub("geometry.size");
     for (int i = 0; i < DIM; i++) {
-      int size = spt.get(std::to_string(i), -1);
-      L[i] = size;
-      N[i] = size * voxelPerUnit;
+      L[i] = spt.get(std::to_string(i), -1.);
+    }
+
+    spt = pt.sub("grid.intervals");
+    for (int i = 0; i < DIM; i++) {
+      N[i] = spt.get(std::to_string(i), -1);
     }
 
     Cube cube(O, L);
@@ -121,9 +128,14 @@ public:
     }
     Domain domain(cubes, (Topology) periodic);
 
-    std::cout << "Instantiating grid:  " << std::flush;
-    g = std::make_shared<G>(domain, N);
-    std::cout << "done" << std::endl;
+    Dune::array<int,DIM> overlap;
+    for (int i = 0; i < DIM; i++) {
+      overlap[i] = 1;
+    }
+
+    if (rank0) std::cout << "Instantiating grid:  " << std::flush;
+    g = std::make_shared<G>(domain, N, overlap);
+    if (rank0) std::cout << "done" << std::endl;
 
     gv = std::make_shared<GV>(g->leafView());
     coefficients = std::make_shared<Coefficients<DIM> >(pt);
@@ -141,7 +153,8 @@ public:
       int ind = mapper->map(*it);
       auto x = it->geometry().center();
       double y = 1.;
-      for (int i = 0; i < GV::dimension; i++) {
+      for (int i = 0; i < 2; i++) {
+      // for (int i = 0; i < GV::dimension; i++) {
         y *= sin(2 * M_PI * x[i]);
       }
       y = 0.5 * (y + 1.);
@@ -165,38 +178,45 @@ public:
 
   void solve()
   {
-    std::cout << "Computing initial values:  " << std::flush;
+    if (rank0) std::cout << "Computing initial values:  " << std::flush;
     Vector u(mapper->size(), 0.);
     initialProjection(u);
     visualize(u, filename(0));
-    std::cout << "done" << std::endl;
+    if (rank0) std::cout << "done" << std::endl;
 
     double dt = T / nt;
     Vector utmp(mapper->size(), 0.);
 
     for(int t = 0; t < nt; t++) {
-      std::cout << "\rComputing time steps:  " << std::setw(3) << t << std::setw(0) << "/" << nt << " " << std::flush;
+      if (rank0) std::cout << "\rComputing time steps:  " << std::setw(3) << t << std::setw(0) << "/" << nt << " " << std::flush;
       go->apply(u, utmp, coefficients->exponent, -dt);
       u += utmp;
       utmp = 0.;
       visualize(u, filename(t+1));
     }
 
-    std::cout << "\rComputing time steps:  done       " << std::endl;
+    if (rank0) std::cout << "\rComputing time steps:  done       " << std::endl;
+  }
+
+  std::tuple<double, std::vector<double>, std::vector<int> >
+    getSubgridData(const std::vector<int>& dofs, int offset)
+  {
+    return ::getSubgridData<DIM, GV, Mapper>(*gv, *mapper, dofs, offset);
   }
 
 
-  std::tuple< std::shared_ptr<ROP>, std::shared_ptr<std::vector<int> >, std::shared_ptr<std::vector<int> > > makeRestrictedSpaceOperator(const std::vector<int>& dofs)
+  std::tuple< std::shared_ptr<ROP>, std::vector<int>, std::vector<int> >
+    makeRestrictedSpaceOperator(double diameter, const std::vector<double>& centers, const std::vector<int>& sourceDofs)
   {
-    auto retval = makeSubgrid<DIM, GV, Mapper>(*gv, *mapper, dofs);
-    std::shared_ptr<RG> subgrid(std::get<0>(retval));
-    std::shared_ptr<std::vector<int> > sourceDofs(std::get<1>(retval));
-    std::shared_ptr<std::vector<int> > rangeDofs(std::get<2>(retval));
+    auto retval = makeSubgrid<DIM>(diameter, centers, sourceDofs);
 
+    auto subgrid = std::get<0>(retval);
     auto rgv = std::make_shared<RGV>(subgrid->leafView());
     auto rgo = std::make_shared<ROP>(rgv, coefficients, subgrid);
 
-    return std::make_tuple(rgo, sourceDofs, rangeDofs);
+    return std::make_tuple(rgo,
+                           std::move(std::get<1>(retval)),
+                           std::move(std::get<2>(retval)));
   }
 
   std::size_t dimSolution()
@@ -205,19 +225,44 @@ public:
   }
 
 #ifdef AS_LIB
-  boost::python::object makeRestrictedSpaceOperatorWrapper(const boost::python::list& dofs)
-  {
-    using boost::python::len;
-    using boost::python::extract;
-    using boost::python::make_tuple;
 
-    std::vector<int> dofVec(len(dofs));
-    for (std::size_t i = 0; i < len(dofs); i++) {
-      dofVec[i] = boost::python::extract<int>(dofs[i]);
-    }
-    auto retval = makeRestrictedSpaceOperator(dofVec);
-    return boost::python::make_tuple(std::get<0>(retval), std::get<1>(retval), std::get<2>(retval));
+
+  template<typename T> std::vector<T> toStdVector(const boost::python::object& iterable)
+  {
+      return std::vector<T>(boost::python::stl_input_iterator<T>(iterable),
+                            boost::python::stl_input_iterator<T>());
   }
+
+  template <class T> boost::python::list toPythonList(const std::vector<T>& vector) {
+      typename std::vector<T>::iterator iter;
+      boost::python::list list;
+      for (const T& item: vector) {
+          list.append(item);
+      }
+      return list;
+  }
+
+  boost::python::object getSubgridDataWrapper(const boost::python::list& dofs, int offset)
+  {
+    auto dofVec = toStdVector<int>(dofs);
+    auto retval = getSubgridData(dofVec, offset);
+    return boost::python::make_tuple(std::get<0>(retval),
+                                     toPythonList<double>(std::get<1>(retval)),
+                                     toPythonList<int>(std::get<2>(retval)));
+  }
+
+  boost::python::object makeRestrictedSpaceOperatorWrapper(const double diameter,
+                                                           const boost::python::list& centers,
+                                                           const::boost::python::list& sourceDofs)
+  {
+    auto centersVec = toStdVector<double>(centers);
+    auto sourceDofsVec = toStdVector<int>(sourceDofs);
+    auto retval = makeRestrictedSpaceOperator(diameter, centersVec, sourceDofsVec);
+    return boost::python::make_tuple(std::get<0>(retval),
+                                     toPythonList<int>(std::get<1>(retval)),
+                                     toPythonList<int>(std::get<2>(retval)));
+  }
+
 
   static void export_()
   {
@@ -229,6 +274,7 @@ public:
 
     class_<Discretization, boost::noncopyable>("Discretization", init<std::string>())
         .def("solve", &Discretization::solve)
+        .def("getSubgridData", &Discretization::getSubgridDataWrapper)
         .def("makeRestrictedSpaceOperator", &Discretization::makeRestrictedSpaceOperatorWrapper)
         .def("visualize", &Discretization::visualize)
         .def("initialProjection", &Discretization::initialProjection)
@@ -278,8 +324,11 @@ BOOST_PYTHON_MODULE(libdune_burgers)
 
 int main(int argc, char** argv)
 {
+  auto& helper = Dune::MPIHelper::instance(argc, argv);
+  rank0 = (helper.rank() == 0);
+
   if (argc!=2) {
-    std::cout << "usage: ./burgers <parameter file>" << std::endl;
+    if (rank0) std::cout << "usage: ./burgers <parameter file>" << std::endl;
     return 1;
   }
 
