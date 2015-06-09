@@ -52,7 +52,9 @@ public:
             const double faceVolume = is->geometry().volume();
             const auto normal = is->centerUnitOuterNormal();
 
-            double convectiveFlux = (normal * coefficients_->v) * (pow(u_s, exponent) + pow(u_n, exponent)) / 2;
+            const double pow_u_s = ((u_s > 0) - (u_s < 0)) * pow(fabs(u_s), exponent);
+            const double pow_u_n = ((u_n > 0) - (u_n < 0)) * pow(fabs(u_n), exponent);
+            double convectiveFlux = (normal * coefficients_->v) * (pow_u_s + pow_u_n) / 2;
 
             const double interfaceFlux = ((u_s - u_n) / (2 * coefficients_->lambda) + convectiveFlux) * faceVolume;
 
