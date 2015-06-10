@@ -15,7 +15,6 @@
 #include <dune/common/parallel/mpihelper.hh>
 #include <dune/common/parametertree.hh>
 #include <dune/common/parametertreeparser.hh>
-#include <dune/common/static_assert.hh>
 
 #include <dune/grid/common/mcmgmapper.hh>
 
@@ -109,15 +108,16 @@ public:
     Dune::FieldVector<double, DIM> L(-1.);
     Dune::array<int,DIM> N;
 
-    int voxelPerUnit = pt.get("grid.voxelPerUnit", -1);
     auto spt = pt.sub("geometry.size");
     for (int i = 0; i < DIM; i++) {
       L[i] = spt.get(std::to_string(i), -1.);
+      assert(L[i] > 0);
     }
 
     spt = pt.sub("grid.intervals");
     for (int i = 0; i < DIM; i++) {
       N[i] = spt.get(std::to_string(i), -1);
+      assert(N[i] > 0);
     }
 
     Cube cube(O, L);
@@ -144,7 +144,9 @@ public:
     mapper = std::make_shared<Mapper>(*gv);
 
     T = pt.get("timestepping.end", -1e99);
+    assert(T > 0);
     nt = pt.get("timestepping.nt", -1);
+    assert(nt > 0);
     int vis = pt.get("timestepping.visualize", -1);
     assert(0 <= vis <= 1);
     doVisualize = vis;
@@ -157,8 +159,7 @@ public:
       int ind = mapper->map(*it);
       auto x = it->geometry().center();
       double y = 1.;
-      for (int i = 0; i < 2; i++) {
-      // for (int i = 0; i < GV::dimension; i++) {
+      for (int i = 0; i < GV::dimension; i++) {
         y *= sin(2 * M_PI * x[i]);
       }
       y = 0.5 * (y + 1.);
