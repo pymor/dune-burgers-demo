@@ -93,6 +93,7 @@ public:
   std::shared_ptr<Mapper> mapper;
   double T;
   int nt;
+  bool doVisualize;
 
   Discretization(const std::string paramFile)
   {
@@ -144,6 +145,9 @@ public:
 
     T = pt.get("timestepping.end", -1e99);
     nt = pt.get("timestepping.nt", -1);
+    int vis = pt.get("timestepping.visualize", -1);
+    assert(0 <= vis <= 1);
+    doVisualize = vis;
   }
 
   void initialProjection(Vector& u)
@@ -181,7 +185,7 @@ public:
     if (rank0) std::cout << "Computing initial values:  " << std::flush;
     Vector u(mapper->size(), 0.);
     initialProjection(u);
-    visualize(u, filename(0));
+    if (doVisualize) visualize(u, filename(0));
     if (rank0) std::cout << "done" << std::endl;
 
     double dt = T / nt;
@@ -192,7 +196,7 @@ public:
       go->apply(u, utmp, coefficients->exponent, -dt);
       u += utmp;
       utmp = 0.;
-      visualize(u, filename(t+1));
+      if (doVisualize) visualize(u, filename(t+1));
     }
 
     if (rank0) std::cout << "\rComputing time steps:  done       " << std::endl;
