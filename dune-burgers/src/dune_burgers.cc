@@ -60,6 +60,7 @@ bool rank0;
 #include "vector.hh"
 #include "operator.hh"
 #include "subgrid.hh"
+#include "measure.hh"
 
 
 #ifdef AS_LIB
@@ -339,7 +340,8 @@ int main(int argc, char** argv)
 
   try{
     Discretization discretization(argv[1]);
-    discretization.solve();
+    auto timeNeeded = measure<>::execution([&]{discretization.solve();});
+    std::cout << "Time needed for solve: " << timeNeeded << std::endl;
   }
   catch (Dune::Exception &e){
     std::cerr << "Dune reported error: " << e << std::endl;
