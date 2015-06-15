@@ -224,7 +224,7 @@ def discretize_dune_burgers(filename, exponent_range=(1., 2.), cache_region=None
 
     d = InstationaryDiscretization(T, initial_data, operator, time_stepper=time_stepper,
                                    parameter_space=parameter_space,
-                                   visualizer=visualizer, name='DuneBrugers',
+                                   visualizer=visualizer, name='DuneBurgers',
                                    cache_region=cache_region)
     # d.generate_sid()
     return d
