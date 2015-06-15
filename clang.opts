@@ -7,5 +7,5 @@ CONFIGURE_FLAGS="
  --enable-fieldvector-size-is-method
  --enable-superlu
  --disable-shared
- --disable-parallel
+ --enable-parallel
 "

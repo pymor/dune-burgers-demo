@@ -3,49 +3,163 @@
 
 #include <dune/grid/common/gridfactory.hh>
 #include <dune/grid/alugrid.hh>
+#include <dune/grid/common/scsgmapper.hh>
+
+template <class GV, class M>
+class NeighbourExchange
+    : public Dune::CommDataHandleIF<NeighbourExchange<GV, M>, int>
+{
+public:
+  typedef int DataType;
+  typedef std::map<int, Dune::FieldVector<int, DIM * 2> > MapType;
+
+  NeighbourExchange (const GV& gv, const M & mapper, MapType& map, int offset)
+    : gv_(gv), mapper_(mapper), map_(map), offset_(offset)
+  {}
+
+  bool contains(int dim, int codim) const
+  {
+    return (codim == 0);
+  }
+
+  bool fixedsize (int dim, int codim) const
+  {
+    return true;
+  }
+
+  template < class EntityType >
+  std::size_t size (EntityType & e) const
+  {
+    return DIM * 2;
+  }
+
+  template <class MessageBuffer, class EntityType, int CODIM>
+  class gather_
+  {
+  public:
+    static void doIt(MessageBuffer& buff, const EntityType& e,
+                     const GV & gv, const M & mapper, double offset)
+    { }
+  };
+
+  template <class MessageBuffer, class EntityType>
+  class gather_<MessageBuffer, EntityType, 0>
+  {
+  public:
+    static void doIt(MessageBuffer& buff, const EntityType& e,
+                     const GV & gv, const M & mapper, double offset)
+    {
+      MapType::mapped_type neighbours;
+      auto isend = gv.iend(e);
+      for (auto is = gv.ibegin(e); is != isend; ++is) {
+        const int localIndex = is->indexInInside();
+        const int outsideIndex = mapper.map(*(is->outside()));
+        neighbours[localIndex] = outsideIndex + offset;
+      }
+      for (int i = 0; i < DIM * 2; i++) {
+        buff.write(neighbours[i]);
+      }
+    }
+  };
+
+  template <class MessageBuffer, class EntityType >
+  void gather(MessageBuffer& buff, const EntityType& e ) const
+  {
+    gather_<MessageBuffer, EntityType, EntityType::codimension>::doIt(buff, e, gv_, mapper_, offset_);
+  }
+
+  template <class MessageBuffer, class EntityType >
+  void scatter(MessageBuffer& buff, const EntityType& e , std::size_t n)
+  {
+    MapType::mapped_type neighbours;
+    for (int i = 0; i < DIM * 2; i++) {
+      buff.read(neighbours[i]);
+    }
+    map_[mapper_.map(e)] = neighbours;
+  }
+
+private :
+  const GV & gv_;
+  const M & mapper_;
+  MapType & map_;
+  int offset_;
+};
+
 
 template <int DIM, class GV, class MAPPER>
-std::tuple<Dune::ALUGrid<DIM, DIM, Dune::cube, Dune::nonconforming> *, std::vector<int> *, std::vector<int> *>
-  makeSubgrid(const GV& gv, const MAPPER& mapper, const std::vector<int>& dofs)
+std::tuple<double, std::vector<double>, std::vector<int> >
+  getSubgridData(const GV& gv, const MAPPER& mapper, const std::vector<int>& dofs, int offset)
 {
-  typedef Dune::ALUGrid<DIM, DIM, Dune::cube, Dune::nonconforming> RG;
+
   typedef Dune::FieldVector<double, DIM> FV;
 
   // Accumulate data
   const double diameter = pow(gv.template begin<0>()->geometry().volume(), 1./DIM);
-  const auto geometryType = gv.template begin<0>()->geometry().type();
+
+  typedef NeighbourExchange<GV, MAPPER> NE;
+  typename NE::MapType overlapMap;
+  NE ne(gv, mapper, overlapMap, offset);
+  gv.template communicate<NE>(ne, Dune::InteriorBorder_All_Interface, Dune::ForwardCommunication);
 
   const int stencil = 2 * DIM + 1;
+  std::vector<double> centers(dofs.size() * DIM, 0.);
   std::vector<int> sourceDofs(dofs.size() * stencil, 0);
-  std::vector<FV> centers(dofs.size());
-  int dofCounter = 0;
 
   auto iend = gv.template end<0>();
   for (auto it = gv.template begin<0>(); it != iend; ++it) {
     const int index = mapper.map(*it);
-    auto pos = std::find(dofs.begin(), dofs.end(), index);
+    auto pos = std::find(dofs.begin(), dofs.end(), index + offset);
     if (pos != dofs.end()) {
       auto sourceDofIndex = pos - dofs.begin();
-      sourceDofs[sourceDofIndex * stencil] = index;
-      centers[sourceDofIndex] = it->geometry().center();
+      sourceDofs[sourceDofIndex * stencil] = index + offset;
 
-      auto isend = gv.iend(*it);
-      for (auto is = gv.ibegin(*it); is != isend; ++is) {
-        const int localIndex = is->indexInInside();
-        const int outsideIndex = mapper.map(*(is->outside()));
-        sourceDofs[sourceDofIndex * stencil + localIndex + 1] = outsideIndex;
+      if (it->partitionType() == Dune::InteriorEntity) {
+        for (int d = 0; d < DIM; d++) {
+          auto center = it->geometry().center();
+          centers[sourceDofIndex * DIM + d] = center[d];
+        }
+
+        auto isend = gv.iend(*it);
+        for (auto is = gv.ibegin(*it); is != isend; ++is) {
+          const int localIndex = is->indexInInside();
+          const int outsideIndex = mapper.map(*(is->outside()));
+          sourceDofs[sourceDofIndex * stencil + localIndex + 1] = outsideIndex + offset;
+        }
+      } else {
+        Dune::FieldVector<int, DIM * 2> neighbours = overlapMap[index];
+        for (int i = 0; i < DIM * 2; i++) {
+          sourceDofs[sourceDofIndex * stencil + i + 1] = neighbours[i];
+        }
       }
-      dofCounter++;
+
     }
   }
 
-  // make sure we have found all dofs
-  assert (dofCounter == dofs.size());
+  return std::make_tuple(diameter, std::move(centers), std::move(sourceDofs));
+}
+
+
+
+template <int DIM>
+std::tuple<std::shared_ptr<Dune::ALUGrid<DIM, DIM, Dune::cube, Dune::nonconforming, Dune::No_Comm> >, std::vector<int>, std::vector<int> >
+  makeSubgrid(double diameter, const std::vector<double>& centers, const std::vector<int>& sourceDofs)
+{
+  Dune::GeometryType geometryType;
+  geometryType.makeCube(DIM);
+  const int stencil = 2 * DIM + 1;
+  typedef Dune::ALUGrid<DIM, DIM, Dune::cube, Dune::nonconforming, Dune::No_Comm> RG;
+  typedef Dune::FieldVector<double, DIM> FV;
+
+  const int sourceDofCount = centers.size() / DIM;
 
   Dune::GridFactory<RG> factory;
 
   int vertexCounter = 0;
-  for (const auto& center: centers) {
+  for (int sourceDofIndex = 0; sourceDofIndex < sourceDofCount; sourceDofIndex++) {
+    FV center;
+    for (int d = 0; d < DIM; d++) {
+      center[d] = centers[sourceDofIndex * DIM + d];
+    }
     auto origin = center + FV(-diameter * 1.5);
 
     // insert all vertices of stencil
@@ -112,27 +226,25 @@ std::tuple<Dune::ALUGrid<DIM, DIM, Dune::cube, Dune::nonconforming> *, std::vect
     }
   }
 
-  auto subgrid = factory.createGrid();
+  std::shared_ptr<RG> subgrid(factory.createGrid());
+
   auto sgv = subgrid->leafView();
   Dune::SingleCodimSingleGeomTypeMapper<typename RG::LeafGridView, 0> smapper(sgv);
-  auto reorderedSourceDofs = new std::vector<int>(sourceDofs.size());
-  auto rangeDofs = new std::vector<int>(dofs.size());
+  std::vector<int> reorderedSourceDofs(sourceDofs.size());
+  std::vector<int> rangeDofs(sourceDofCount);
 
   {
     auto iend = sgv.template end<0>();
     for (auto it = sgv.template begin<0>(); it != iend; ++it) {
      auto index = smapper.map(*it);
      auto insertionIndex = factory.insertionIndex(*it);
-     (*reorderedSourceDofs)[index] = sourceDofs[insertionIndex];
+     reorderedSourceDofs[index] = sourceDofs[insertionIndex];
      if (insertionIndex % stencil == 0) {
-       (*rangeDofs)[insertionIndex / stencil] = index;
+       rangeDofs[insertionIndex / stencil] = index;
      }
     }
   }
-  return std::make_tuple(subgrid, reorderedSourceDofs, rangeDofs);
+  return std::make_tuple(subgrid, std::move(reorderedSourceDofs), std::move(rangeDofs));
 }
-
-
-
 
 #endif // SUBGRID_HH

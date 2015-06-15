@@ -2,7 +2,8 @@
 #define OPERATOR_HH
 
 
-#include<dune/grid/common/scsgmapper.hh>
+#include <dune/grid/common/mcmgmapper.hh>
+#include <dune/grid/common/datahandleif.hh>
 
 #include "coefficients.hh"
 #include "vector.hh"
@@ -12,11 +13,58 @@
 #endif
 
 
+template <class M>
+class VectorExchange
+    : public Dune::CommDataHandleIF<VectorExchange<M>, double>
+{
+public:
+  typedef double DataType;
+
+  VectorExchange (const M & mapper, Vector& u)
+    : mapper_(mapper), u_(u)
+  {}
+
+  bool contains(int dim, int codim) const
+  {
+    return (codim == 0);
+  }
+
+  bool fixedsize (int dim, int codim) const
+  {
+    return true;
+  }
+
+  template < class EntityType >
+  std::size_t size (EntityType & e) const
+  {
+    return 1;
+  }
+
+  template <class MessageBuffer, class EntityType >
+  void gather(MessageBuffer& buff, const EntityType& e ) const
+  {
+    buff.write(u_[mapper_.map(e)]);
+  }
+
+  template <class MessageBuffer, class EntityType >
+  void scatter(MessageBuffer& buff, const EntityType& e , std::size_t n)
+  {
+    DataType x;
+    buff.read(x);
+    u_[mapper_.map(e)] = x;
+  }
+private :
+  const M& mapper_;
+  Vector& u_;
+};
+
+
 template <class GV, typename D = char>
 class SpaceOperator
 {
 public:
-  typedef Dune::SingleCodimSingleGeomTypeMapper<GV, 0> Mapper;
+  typedef Dune::MultipleCodimMultipleGeomTypeMapper<GV, Dune::MCMGElementLayout> Mapper;
+  typedef VectorExchange<Mapper> VE;
 
   SpaceOperator(std::shared_ptr<GV> gv, std::shared_ptr<Coefficients<GV::dimension> >& coeffs)
       : gv_(gv), coefficients_(coeffs), mapper_(*gv)
@@ -65,6 +113,9 @@ public:
         }
       }
     }
+
+    VE ve(mapper_, range);
+    gv_->template communicate<VE>(ve, Dune::InteriorBorder_All_Interface, Dune::ForwardCommunication);
   }
 
   std::size_t dimSource()
