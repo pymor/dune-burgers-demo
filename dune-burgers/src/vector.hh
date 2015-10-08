@@ -52,18 +52,6 @@ public:
     Dune::DynamicVector<double>::axpy(a, other);
   }
 
-  bool almostEqual(const Vector& other, const double rtol = 1e-14, const double atol = 1e-14) const {
-    const auto sz = size();
-    for (std::size_t i = 0; i < sz; i++) {
-      const auto x = (*this)[i];
-      const auto y = other[i];
-      if (fabs(x-y) > atol + fabs(y) * rtol) {
-        return false;
-      }
-    }
-    return true;
-  }
-
   std::size_t amaxInd() {
     std::size_t currentIndex = 0;
     double currentValue = fabs((*this)[0]);
@@ -108,7 +96,6 @@ public:
         .def("dot", &Vector::dot)
         .def("copy", &Vector::copy, return_value_policy<manage_new_object>())
         .def("assign", &Vector::assign)
-        .def("almostEqual", &Vector::almostEqual)
         .def("scal", &Vector::scal)
         .def("amaxInd", &Vector::amaxInd)
         .def("buffer", &buffer)

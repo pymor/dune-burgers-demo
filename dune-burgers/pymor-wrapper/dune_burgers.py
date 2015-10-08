@@ -46,12 +46,6 @@ class DuneVector(VectorInterface):
     def copy(self):
         return DuneVector(self._impl.copy())
 
-    @defaults('rtol', 'atol', qualname='dune_burgers.DuneVector.almost_equal')
-    def almost_equal(self, other,
-                     rtol=2**4 * np.finfo(np.zeros(1.).dtype).eps,
-                     atol=2**4 * np.finfo(np.zeros(1.).dtype).eps):
-        return self._impl.almostEqual(other._impl, rtol, atol)
-
     def scal(self, alpha):
         self._impl.scal(alpha)
 
