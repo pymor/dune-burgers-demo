@@ -7,23 +7,26 @@ import weakref
 import numpy as np
 
 from pymor.algorithms.timestepping import ExplicitEulerTimeStepper
-from pymor.core.defaults import defaults
 from pymor.core.interfaces import ImmutableInterface
 from pymor.discretizations.basic import InstationaryDiscretization
 from pymor.operators.basic import OperatorBase
 from pymor.parameters.spaces import CubicParameterSpace
 from pymor.tools import mpi
 from pymor.vectorarrays.interfaces import VectorSpace
-from pymor.vectorarrays.list import VectorInterface, ListVectorArray
+from pymor.vectorarrays.list import CopyOnWriteVector, ListVectorArray
 from pymor.vectorarrays.numpy import NumpyVectorSpace
 
 import libdune_burgers as dune_module
 
 
-class DuneVector(VectorInterface):
+class DuneVector(CopyOnWriteVector):
 
     def __init__(self, impl):
         self._impl = impl
+
+    @classmethod
+    def from_instance(cls, instance):
+        return cls(instance._impl)
 
     @classmethod
     def make_zeros(cls, subtype):
@@ -43,13 +46,13 @@ class DuneVector(VectorInterface):
     def data(self):
         return np.frombuffer(self._impl.buffer())
 
-    def copy(self):
-        return DuneVector(self._impl.copy())
+    def _copy_data(self):
+        self._impl = self._impl.copy()
 
-    def scal(self, alpha):
+    def _scal(self, alpha):
         self._impl.scal(alpha)
 
-    def axpy(self, alpha, x):
+    def _axpy(self, alpha, x):
         self._impl.axpy(alpha, x._impl)
 
     def dot(self, other):
